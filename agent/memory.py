@@ -1,13 +1,26 @@
-import asyncpg, os
-from datetime import datetime
+import os
+import asyncpg
+from datetime import datetime, timezone
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://openclaw:openclaw@db:5432/openclaw")
+_pool = None
 
 async def get_pool():
-    return await asyncpg.create_pool(DATABASE_URL)
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(os.environ["DATABASE_URL"], min_size=2, max_size=10)
+    return _pool
 
-async def init_db(pool):
+async def init_db():
+    pool = await get_pool()
     async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id SERIAL PRIMARY KEY,
@@ -15,46 +28,44 @@ async def init_db(pool):
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 created_at TIMESTAMPTZ DEFAULT NOW()
-            );
-            CREATE TABLE IF NOT EXISTS memories (
-                id SERIAL PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                key TEXT NOT NULL,
-                value TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                UNIQUE(user_id, key)
-            );
+            )
         """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id, created_at)")
 
-async def save_message(pool, user_id: str, role: str, content: str):
+async def save_memory(user_id: str, content: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memories (user_id, content) VALUES ($1, $2)",
+            user_id, content
+        )
+
+async def get_memories(user_id: str) -> list[str]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT content FROM memories WHERE user_id=$1 ORDER BY created_at ASC",
+            user_id
+        )
+    return [r["content"] for r in rows]
+
+async def save_message(user_id: str, role: str, content: str):
+    pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO messages (user_id, role, content) VALUES ($1, $2, $3)",
             user_id, role, content
         )
 
-async def get_messages(pool, user_id: str, limit: int = 20):
+async def get_recent_messages(user_id: str, limit: int = 10) -> list[dict]:
+    pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT role, content, created_at FROM messages WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2",
+            """SELECT role, content FROM messages
+               WHERE user_id=$1
+               ORDER BY created_at DESC
+               LIMIT $2""",
             user_id, limit
         )
-        return [dict(r) for r in reversed(rows)]
-
-async def save_memory(pool, user_id: str, key: str, value: str):
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO memories (user_id, key, value) VALUES ($1,$2,$3) ON CONFLICT (user_id,key) DO UPDATE SET value=EXCLUDED.value",
-            user_id, key, value
-        )
-
-async def get_memories(pool, user_id: str):
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT key, value, created_at FROM memories WHERE user_id=$1", user_id)
-        return [dict(r) for r in rows]
-
-async def get_stats(pool, user_id: str):
-    async with pool.acquire() as conn:
-        msg_count = await conn.fetchval("SELECT COUNT(*) FROM messages WHERE user_id=$1", user_id)
-        mem_count = await conn.fetchval("SELECT COUNT(*) FROM memories WHERE user_id=$1", user_id)
-        return {"messages": msg_count, "memories": mem_count}
+    return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]

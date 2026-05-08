@@ -1,29 +1,34 @@
 version: '3.8'
+
 services:
   agent:
     build: ./agent
     ports:
       - "8080:8080"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - DATABASE_URL=postgresql://openclaw:openclaw@db:5432/openclaw
-      - API_KEY=${OPENCLAW_API_KEY:-openclaw-default}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
+
   db:
-    image: postgres:15-alpine
+    image: postgres:15
     environment:
-      - POSTGRES_USER=openclaw
-      - POSTGRES_PASSWORD=openclaw
-      - POSTGRES_DB=openclaw
+      POSTGRES_USER: openclaw
+      POSTGRES_PASSWORD: openclaw
+      POSTGRES_DB: openclaw
     volumes:
-      - openclaw_data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U openclaw"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
 volumes:
-  openclaw_data:
+  pgdata:
