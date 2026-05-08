@@ -1,0 +1,29 @@
+version: '3.8'
+services:
+  agent:
+    build: ./agent
+    ports:
+      - "8080:8080"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DATABASE_URL=postgresql://openclaw:openclaw@db:5432/openclaw
+      - API_KEY=${OPENCLAW_API_KEY:-openclaw-default}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=openclaw
+      - POSTGRES_PASSWORD=openclaw
+      - POSTGRES_DB=openclaw
+    volumes:
+      - openclaw_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openclaw"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+volumes:
+  openclaw_data:
